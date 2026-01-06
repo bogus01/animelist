@@ -1,0 +1,5 @@
+{
+  "name": "AniList Playlist Manager",
+  "description": "A comprehensive anime management tool to search, organize into playlists, and track your watch progress using AniList data.",
+  "requestFramePermissions": []
+}
