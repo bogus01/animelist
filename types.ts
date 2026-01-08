@@ -44,6 +44,7 @@ export interface Anime {
     extraLarge: string;
     color: string;
   };
+  bannerImage: string | null;
   description: string;
   episodes: number | null;
   status: string;
@@ -79,7 +80,6 @@ export interface Playlist {
 }
 
 export interface UserData {
-  playlists: Playlist[];
   animeStatuses: Record<number, WatchStatus>;
   favoriteIds: number[];
   watchedEpisodes: Record<number, number[]>; // animeId -> array of episode numbers

@@ -17,6 +17,7 @@ const ANIME_QUERY = `
           extraLarge
           color
         }
+        bannerImage
         description
         episodes
         status
@@ -70,6 +71,8 @@ const ANIME_BY_IDS_QUERY = `
         }
         episodes
         status
+        genres
+        averageScore
         nextAiringEpisode {
           episode
           airingAt
@@ -113,6 +116,99 @@ export const getAnimeListByIds = async (ids: number[]): Promise<Partial<Anime>[]
     body: JSON.stringify({
       query: ANIME_BY_IDS_QUERY,
       variables: { ids }
+    })
+  });
+  const data = await response.json();
+  return data.data.Page.media;
+};
+
+export const getTrendingAnime = async (perPage: number = 10): Promise<Anime[]> => {
+  const query = `
+    query ($perPage: Int) {
+      Page (page: 1, perPage: $perPage) {
+        media (sort: TRENDING_DESC, type: ANIME, isAdult: false) {
+          id
+          title {
+            romaji
+            english
+            native
+          }
+          coverImage {
+            large
+            extraLarge
+            color
+          }
+          bannerImage
+          description
+          episodes
+          status
+          genres
+          averageScore
+          relations {
+            edges {
+              relationType
+              node {
+                id
+                type
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  const response = await fetch(ANILIST_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      query,
+      variables: { perPage }
+    })
+  });
+  const data = await response.json();
+  return data.data.Page.media;
+};
+
+export const getAnimeByCategory = async (genre: string, perPage: number = 10): Promise<Anime[]> => {
+  const query = `
+    query ($genre: String, $perPage: Int) {
+      Page (page: 1, perPage: $perPage) {
+        media (genre: $genre, sort: TRENDING_DESC, type: ANIME, isAdult: false) {
+          id
+          title {
+            romaji
+            english
+          }
+          coverImage {
+            large
+            extraLarge
+            color
+          }
+          bannerImage
+          description
+          episodes
+          status
+          genres
+          averageScore
+          relations {
+            edges {
+              relationType
+              node {
+                id
+                type
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  const response = await fetch(ANILIST_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      query,
+      variables: { genre, perPage }
     })
   });
   const data = await response.json();

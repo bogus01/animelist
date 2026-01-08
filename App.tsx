@@ -1,38 +1,343 @@
-
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, List, Bookmark, Trash2, Plus, ChevronLeft, Play, CheckCircle, Clock, X, Heart, ExternalLink, Calendar, Check, Layers, ArrowLeft } from 'lucide-react';
-import { Anime, Playlist, WatchStatus, UserData, StreamingEpisode, NextAiringEpisode } from './types';
-import { DEFAULT_PLAYLISTS } from './constants';
-import { searchAnime, getAnimeById, getAnimeListByIds } from './services/aniListService';
-import { getAnimeInsight } from './services/geminiService';
+import { Search, Info, Bookmark, Trash2, Plus, ChevronLeft, ChevronRight, Play, CheckCircle, Clock, X, Heart, ExternalLink, Calendar, Check, Layers, ArrowLeft, Star } from 'lucide-react';
+import { Anime, WatchStatus, UserData, StreamingEpisode, NextAiringEpisode } from './types';
+import { searchAnime, getAnimeById, getAnimeListByIds, getTrendingAnime, getAnimeByCategory } from './services/aniListService';
+import { KVStorageService } from './services/kvStorageService';
+
+const NavButton: React.FC<{ icon: React.ReactNode, active: boolean, onClick: () => void, label: string }> = ({ icon, active, onClick, label }) => (
+  <button onClick={onClick} className={`p-2 rounded-lg transition-all relative group ${active ? 'text-indigo-400' : 'text-gray-400 hover:text-white'}`}>
+    {icon}
+    <span className="absolute top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-1 bg-gray-800 text-white text-[10px] rounded opacity-0 group-hover:opacity-100 whitespace-nowrap z-50 pointer-events-none">{label}</span>
+  </button>
+);
+
+const AnimeCard: React.FC<{
+  anime: Anime,
+  onClick: () => void,
+  onToggleFavorite: (id: number) => void,
+  isFavorite: boolean
+}> = ({ anime, onClick, onToggleFavorite, isFavorite }) => {
+  const seasons = useMemo(() => {
+    if (!anime.relations?.edges) return '1 Saison';
+    const seasonsCount = anime.relations.edges.filter(e =>
+      e.node.type === 'ANIME' && (e.relationType === 'PREQUEL' || e.relationType === 'SEQUEL')
+    ).length + 1;
+    return `${seasonsCount} Saison${seasonsCount > 1 ? 's' : ''}`;
+  }, [anime]);
+
+  return (
+    <div
+      onClick={onClick}
+      className="flex-shrink-0 w-56 h-[340px] group cursor-pointer relative"
+    >
+      {/* Front Side */}
+      <div className="absolute inset-0 ring-1 ring-white/10 rounded-2xl overflow-hidden shadow-2xl transition-opacity duration-300 group-hover:opacity-0">
+        <img src={anime.coverImage.large} className="w-full h-full object-cover" alt="" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent p-4 flex flex-col justify-end">
+          <h3 className="text-sm font-bold text-white line-clamp-2 mb-2">{anime.title.english || anime.title.romaji}</h3>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-indigo-400 font-black uppercase tracking-widest">{anime.genres?.[0] || 'Anime'}</span>
+            <span className="text-[10px] text-green-500 font-black">{anime.averageScore || '??'}%</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Back Side (Details on Hover) */}
+      <div className="absolute inset-0 bg-[#1a1d24] rounded-2xl p-5 border border-indigo-500/30 flex flex-col shadow-2xl opacity-0 group-hover:opacity-100 transition-all duration-300 transform scale-95 group-hover:scale-100 overflow-hidden">
+        <div className="flex-1 space-y-3 overflow-hidden">
+          <div className="flex items-start justify-between gap-2">
+            <h4 className="text-xs font-black text-white line-clamp-2 uppercase tracking-wide leading-tight">{anime.title.english || anime.title.romaji}</h4>
+            <div className={`p-1.5 rounded-full ${isFavorite ? 'text-red-500 bg-red-500/10' : 'text-gray-500'}`}>
+              <Heart size={14} fill={isFavorite ? "currentColor" : "none"} />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-1.5">
+            <span className="px-2 py-0.5 bg-indigo-500/20 text-indigo-400 text-[8px] font-black rounded uppercase tracking-tighter">{seasons}</span>
+            <span className="px-2 py-0.5 bg-white/5 text-gray-300 text-[8px] font-black rounded uppercase tracking-tighter">{anime.episodes || '??'} Éps</span>
+          </div>
+
+          <div
+            className="text-[10px] text-gray-400 leading-relaxed line-clamp-[9] font-medium"
+            dangerouslySetInnerHTML={{ __html: anime.description || 'Aucune description disponible.' }}
+          />
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-white/5">
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleFavorite(anime.id); }}
+            className={`w-full py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-2 group/btn shadow-lg ${isFavorite ? 'bg-red-500 text-white' : 'bg-white text-black hover:bg-indigo-500 hover:text-white'}`}
+          >
+            {isFavorite ? <Check size={14} /> : <Plus size={14} />}
+            {isFavorite ? 'Dans ma liste' : 'Ajouter à ma liste'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const AnimeCarousel: React.FC<{
+  title: string,
+  items: Anime[],
+  onDetails: (id: number) => void,
+  onToggleFavorite: (id: number) => void,
+  favoriteIds: number[]
+}> = ({ title, items, onDetails, onToggleFavorite, favoriteIds }) => {
+  const [scrollIndex, setScrollIndex] = useState(0);
+  const itemsPerPage = 5;
+
+  const next = () => {
+    if (scrollIndex + itemsPerPage < items.length) {
+      setScrollIndex(prev => prev + itemsPerPage);
+    }
+  };
+
+  const prev = () => {
+    if (scrollIndex - itemsPerPage >= 0) {
+      setScrollIndex(prev => prev - itemsPerPage);
+    }
+  };
+
+  return (
+    <section className="space-y-6 relative group/carousel">
+      <div className="flex items-center justify-between px-8 md:px-16">
+        <h2 className="text-3xl font-black text-white px-6 border-l-8 border-indigo-600 tracking-tighter uppercase">{title}</h2>
+        <div className="flex gap-3 opacity-0 group-hover/carousel:opacity-100 transition-all duration-300">
+          <button
+            onClick={prev}
+            disabled={scrollIndex === 0}
+            className="w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center disabled:opacity-20 disabled:bg-gray-800 disabled:cursor-not-allowed hover:scale-110 active:scale-95 transition-all shadow-xl"
+          >
+            <ChevronLeft size={28} />
+          </button>
+          <button
+            onClick={next}
+            disabled={scrollIndex + itemsPerPage >= items.length}
+            className="w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center disabled:opacity-20 disabled:bg-gray-800 disabled:cursor-not-allowed hover:scale-110 active:scale-95 transition-all shadow-xl"
+          >
+            <ChevronRight size={28} />
+          </button>
+        </div>
+      </div>
+      <div className="overflow-visible px-8 md:px-16">
+        <div
+          className="flex gap-8 transition-all duration-700 ease-[cubic-bezier(0.23,1,0.32,1)]"
+          style={{ transform: `translateX(-${scrollIndex * (224 + 32)}px)` }}
+        >
+          {items.map(anime => (
+            <AnimeCard
+              key={anime.id}
+              anime={anime}
+              onClick={() => onDetails(anime.id)}
+              onToggleFavorite={onToggleFavorite}
+              isFavorite={favoriteIds.includes(anime.id)}
+            />
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+};
+
+const AnimeDetailsView: React.FC<{
+  id: number,
+  onBack: () => void,
+  userData: UserData,
+  onStatusChange: (aid: number, s: WatchStatus) => void,
+  onToggleFavorite: (id: number) => void,
+  onToggleEpisode: (aid: number, ep: number) => void
+}> = ({ id, onBack, userData, onStatusChange, onToggleFavorite, onToggleEpisode }) => {
+  const [currentMedia, setCurrentMedia] = useState<Anime | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const loadMedia = async () => {
+      setIsLoading(true);
+      const data = await getAnimeById(id);
+      setCurrentMedia(data);
+      setIsLoading(false);
+    };
+    loadMedia();
+  }, [id]);
+
+  if (isLoading || !currentMedia) return <div className="flex items-center justify-center h-96"><div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>;
+
+  const currentStatus = userData.animeStatuses[currentMedia.id] || WatchStatus.PLAN_TO_WATCH;
+  const isFavorite = userData.favoriteIds.includes(currentMedia.id);
+  const watchedEps = userData.watchedEpisodes[currentMedia.id] || [];
+
+  return (
+    <div className="animate-in fade-in duration-500 p-8 pt-0">
+      <button onClick={onBack} className="flex items-center gap-2 text-gray-400 hover:text-white mb-8">
+        <ArrowLeft size={20} /> Retour
+      </button>
+
+      <div className="grid lg:grid-cols-[300px_1fr] gap-12">
+        <aside className="space-y-6">
+          <img src={currentMedia.coverImage.extraLarge} className="w-full rounded-2xl shadow-2xl" alt="" />
+          <button
+            onClick={() => onToggleFavorite(currentMedia.id)}
+            className={`w-full flex items-center justify-center gap-3 py-4 rounded-xl font-bold transition-all ${isFavorite ? 'bg-red-500 text-white' : 'bg-white text-black hover:bg-gray-200'}`}
+          >
+            {isFavorite ? <Check /> : <Plus />} {isFavorite ? 'Dans ma liste' : 'Ajouter à ma liste'}
+          </button>
+
+          <div className="bg-[#1a1d24] p-6 rounded-2xl border border-gray-800 space-y-4">
+            <h3 className="font-bold flex items-center gap-2"><Star size={18} className="text-yellow-500" /> État</h3>
+            <div className="flex flex-col gap-2">
+              {[WatchStatus.PLAN_TO_WATCH, WatchStatus.IN_PROGRESS, WatchStatus.COMPLETED].map(s => (
+                <button key={s} onClick={() => onStatusChange(currentMedia.id, s as WatchStatus)} className={`px-4 py-3 rounded-lg text-sm text-left transition-all ${currentStatus === s ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        <section className="space-y-8">
+          <div>
+            <div className="flex gap-2 mb-4">
+              {currentMedia.genres?.map(g => <span key={g} className="text-[10px] font-bold uppercase tracking-widest bg-white/5 border border-white/10 px-3 py-1 rounded">{g}</span>)}
+            </div>
+            <h1 className="text-5xl font-black text-white mb-2">{currentMedia.title.english || currentMedia.title.romaji}</h1>
+            <p className="text-xl text-gray-500">{currentMedia.title.romaji}</p>
+          </div>
+
+          <div dangerouslySetInnerHTML={{ __html: currentMedia.description }} className="text-gray-400 leading-relaxed text-lg prose prose-invert max-w-none" />
+
+          <div className="pt-8 border-t border-gray-800">
+            <h2 className="text-2xl font-bold text-white mb-6">Épisodes</h2>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {Array.from({ length: currentMedia.episodes || 12 }).map((_, i) => {
+                const epNum = i + 1;
+                const isWatched = watchedEps.includes(epNum);
+                return (
+                  <button
+                    key={epNum}
+                    onClick={() => onToggleEpisode(currentMedia.id, epNum)}
+                    className={`flex items-center justify-between p-4 rounded-xl border transition-all ${isWatched ? 'bg-indigo-600/10 border-indigo-500/50 text-indigo-400' : 'bg-gray-900 border-gray-800 text-gray-500 hover:border-gray-700'}`}
+                  >
+                    <span className="font-bold">Épisode {epNum}</span>
+                    {isWatched && <CheckCircle size={18} />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+};
 
 const App: React.FC = () => {
   // Navigation
-  const [currentView, setCurrentView] = useState<'search' | 'playlists' | 'favorites' | 'details'>('search');
+  const [currentView, setCurrentView] = useState<'home' | 'search' | 'my-list' | 'details'>('home');
   const [selectedAnimeId, setSelectedAnimeId] = useState<number | null>(null);
-  
+
   // Data State
+  const [trendingAnime, setTrendingAnime] = useState<Anime[]>([]);
+  const [actionAnime, setActionAnime] = useState<Anime[]>([]);
+  const [romanceAnime, setRomanceAnime] = useState<Anime[]>([]);
+  const [comedyAnime, setComedyAnime] = useState<Anime[]>([]);
+  const [featuredAnimes, setFeaturedAnimes] = useState<Anime[]>([]);
+  const [currentSlide, setCurrentSlide] = useState(0);
+  const [myListAnime, setMyListAnime] = useState<Anime[]>([]);
+
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<Anime[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [newPlaylistName, setNewPlaylistName] = useState('');
-  
+
   // Persisted User Data
-  const [userData, setUserData] = useState<UserData>(() => {
-    const saved = localStorage.getItem('ani_user_data');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (!parsed.favoriteIds) parsed.favoriteIds = [];
-      if (!parsed.watchedEpisodes) parsed.watchedEpisodes = {};
-      return parsed;
+  const [userData, setUserData] = useState<UserData>({ animeStatuses: {}, favoriteIds: [], watchedEpisodes: {} });
+  const [userId] = useState(() => {
+    let id = localStorage.getItem('ani_user_id');
+    if (!id) {
+      id = 'user_' + Math.random().toString(36).substr(2, 9);
+      localStorage.setItem('ani_user_id', id);
     }
-    return { playlists: DEFAULT_PLAYLISTS, animeStatuses: {}, favoriteIds: [], watchedEpisodes: {} };
+    return id;
   });
 
+  // Load from Supabase on mount
   useEffect(() => {
+    const initData = async () => {
+      const remoteData = await KVStorageService.getUserData(userId);
+      if (remoteData) {
+        setUserData(remoteData);
+      } else {
+        // Fallback to local storage if no remote data exists yet
+        const saved = localStorage.getItem('ani_user_data');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (!parsed.favoriteIds) parsed.favoriteIds = [];
+          if (!parsed.watchedEpisodes) parsed.watchedEpisodes = {};
+          setUserData(parsed);
+          // Sync to remote for the first time
+          await KVStorageService.saveUserData(userId, parsed);
+        }
+      }
+    };
+    initData();
+  }, [userId]);
+
+  useEffect(() => {
+    // Save to both
     localStorage.setItem('ani_user_data', JSON.stringify(userData));
+    KVStorageService.saveUserData(userId, userData).catch(err => console.error("Sync error:", err));
+
+    // Load anime objects for "Ma Liste"
+    const loadMyList = async () => {
+      if (userData.favoriteIds.length > 0) {
+        const data = await getAnimeListByIds(userData.favoriteIds);
+        setMyListAnime(data.filter(a => a !== null) as Anime[]);
+      } else {
+        setMyListAnime([]);
+      }
+    };
+    loadMyList();
   }, [userData]);
+
+  const [isLoadingHome, setIsLoadingHome] = useState(true);
+
+  useEffect(() => {
+    const loadData = async () => {
+      setIsLoadingHome(true);
+      try {
+        const results = await Promise.allSettled([
+          getTrendingAnime(15),
+          getAnimeByCategory('Action', 15),
+          getAnimeByCategory('Romance', 15),
+          getAnimeByCategory('Comedy', 15)
+        ]);
+
+        if (results[0].status === 'fulfilled') setTrendingAnime(results[0].value);
+        if (results[1].status === 'fulfilled') setActionAnime(results[1].value);
+        if (results[2].status === 'fulfilled') setRomanceAnime(results[2].value);
+        if (results[3].status === 'fulfilled') setComedyAnime(results[3].value);
+
+        if (results[0].status === 'fulfilled' && results[0].value.length > 0) {
+          const trending = results[0].value;
+          setFeaturedAnimes(trending.slice(0, 5));
+        }
+      } catch (err) {
+        console.error("Critical error loading home data:", err);
+      } finally {
+        setIsLoadingHome(false);
+      }
+    };
+    loadData();
+  }, []);
+
+  // Auto-slide effect for carousel
+  useEffect(() => {
+    if (featuredAnimes.length === 0) return;
+    const interval = setInterval(() => {
+      setCurrentSlide(prev => (prev + 1) % featuredAnimes.length);
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [featuredAnimes]);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,50 +359,24 @@ const App: React.FC = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleCreatePlaylist = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newPlaylistName.trim()) return;
-    const newPlaylist: Playlist = {
-      id: `pl-${Date.now()}`,
-      name: newPlaylistName.trim(),
-      animeIds: [],
-      createdAt: Date.now()
-    };
-    setUserData(prev => ({ ...prev, playlists: [...prev.playlists, newPlaylist] }));
-    setNewPlaylistName('');
-    setIsModalOpen(false);
-  };
-
-  const deletePlaylist = (id: string) => {
-    if (id === 'default-watch') return;
-    setUserData(prev => ({ ...prev, playlists: prev.playlists.filter(p => p.id !== id) }));
-  };
-
-  const toggleAnimeInPlaylist = (playlistId: string, animeId: number) => {
-    setUserData(prev => ({
-      ...prev,
-      playlists: prev.playlists.map(p => {
-        if (p.id === playlistId) {
-          const exists = p.animeIds.includes(animeId);
-          return {
-            ...p,
-            animeIds: exists ? p.animeIds.filter(id => id !== animeId) : [...p.animeIds, animeId]
-          };
-        }
-        return p;
-      })
-    }));
-  };
-
   const toggleFavorite = (animeId: number) => {
     setUserData(prev => {
-      const isFav = prev.favoriteIds.includes(animeId);
-      return {
+      const isInList = prev.favoriteIds.includes(animeId);
+      const newData = {
         ...prev,
-        favoriteIds: isFav 
-          ? prev.favoriteIds.filter(id => id !== animeId) 
+        favoriteIds: isInList
+          ? prev.favoriteIds.filter(id => id !== animeId)
           : [...prev.favoriteIds, animeId]
       };
+
+      // Immediate sync for better UX
+      if (isInList) {
+        KVStorageService.removeFromFavorites(userId, animeId).catch(console.error);
+      } else {
+        KVStorageService.addToFavorites(userId, animeId).catch(console.error);
+      }
+
+      return newData;
     });
   };
 
@@ -106,544 +385,260 @@ const App: React.FC = () => {
       ...prev,
       animeStatuses: { ...prev.animeStatuses, [animeId]: status }
     }));
+    KVStorageService.updateAnimeStatus(userId, animeId, status).catch(console.error);
   };
 
   const toggleEpisodeWatched = (animeId: number, epNumber: number) => {
     setUserData(prev => {
       const currentWatched = prev.watchedEpisodes[animeId] || [];
       const isWatched = currentWatched.includes(epNumber);
-      return {
+      const newData = {
         ...prev,
         watchedEpisodes: {
           ...prev.watchedEpisodes,
-          [animeId]: isWatched 
+          [animeId]: isWatched
             ? currentWatched.filter(n => n !== epNumber)
             : [...currentWatched, epNumber]
         }
       };
+
+      KVStorageService.toggleEpisodeWatched(userId, animeId, epNumber).catch(console.error);
+
+      return newData;
     });
   };
 
   return (
     <div className="min-h-screen bg-[#0f1115] text-gray-200">
-      <nav className="fixed bottom-0 w-full bg-[#161920]/95 backdrop-blur-md border-t border-gray-800 z-50 md:top-0 md:h-screen md:w-20 md:border-r md:border-t-0 md:flex-col md:justify-center md:items-center">
-        <div className="flex justify-around items-center h-16 md:flex-col md:h-auto md:space-y-8">
-          <NavButton icon={<Search size={24} />} active={currentView === 'search'} onClick={() => setCurrentView('search')} label="Rechercher" />
-          <NavButton icon={<List size={24} />} active={currentView === 'playlists'} onClick={() => setCurrentView('playlists')} label="Playlists" />
-          <NavButton icon={<Heart size={24} />} active={currentView === 'favorites'} onClick={() => setCurrentView('favorites')} label="Favoris" />
+      <nav className="fixed top-0 w-full bg-[#0f1115]/80 backdrop-blur-xl border-b border-white/5 z-[100] px-8 md:px-16 flex items-center justify-between h-20">
+        <div className="flex items-center gap-12">
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setCurrentView('home')}>
+            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20 rotate-3 group-hover:rotate-0 transition-transform">
+              <Layers size={24} className="text-white" />
+            </div>
+            <span className="text-2xl font-black text-white tracking-tighter uppercase">Ani<span className="text-indigo-500">List</span></span>
+          </div>
+
+          <div className="hidden md:flex items-center gap-8">
+            <button
+              onClick={() => setCurrentView('home')}
+              className={`text-sm font-bold transition-all ${currentView === 'home' ? 'text-indigo-400' : 'text-gray-400 hover:text-white'}`}
+            >
+              Accueil
+            </button>
+            <button
+              onClick={() => setCurrentView('search')}
+              className={`text-sm font-bold transition-all ${currentView === 'search' ? 'text-indigo-400' : 'text-gray-400 hover:text-white'}`}
+            >
+              Parcourir
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <NavButton icon={<Search size={22} />} active={currentView === 'search'} onClick={() => setCurrentView('search')} label="Rechercher" />
+          <NavButton icon={<Bookmark size={22} />} active={currentView === 'my-list'} onClick={() => setCurrentView('my-list')} label="Ma Liste" />
+          <div className="w-10 h-10 rounded-full border-2 border-indigo-500/30 overflow-hidden cursor-pointer hover:border-indigo-500 transition-colors">
+            <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" alt="Profile" />
+          </div>
         </div>
       </nav>
 
-      <main className="pb-24 pt-6 px-4 md:pl-24 md:pt-10 max-w-7xl mx-auto">
-        {currentView === 'search' && (
-          <div className="space-y-8 animate-in fade-in duration-500">
-            <header>
-              <h1 className="text-3xl font-bold text-white mb-2 text-center md:text-left">Rechercher</h1>
-              <p className="text-gray-400 text-center md:text-left">Découvrez de nouveaux animés et gérez votre collection.</p>
-            </header>
+      <main className={`pb-24 ${currentView === 'home' ? 'pt-0' : 'pt-28 px-4 md:px-16'} max-w-[100vw] overflow-x-hidden`}>
+        {currentView === 'home' && isLoadingHome && (
+          <div className="flex flex-col items-center justify-center h-[80vh] gap-4">
+            <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <p className="text-indigo-400 font-medium animate-pulse">Chargement de votre univers...</p>
+          </div>
+        )}
+        {currentView === 'home' && !isLoadingHome && (
+          <div className="animate-in fade-in duration-700">
+            {/* Featured Banner Carousel */}
+            {featuredAnimes.length > 0 && (
+              <div className="relative h-[85vh] w-full overflow-hidden mb-12 group/banner">
+                {featuredAnimes.map((anime, idx) => (
+                  <div
+                    key={anime.id}
+                    className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${idx === currentSlide ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
+                  >
+                    <div className="absolute inset-0">
+                      <img
+                        src={anime.bannerImage || anime.coverImage.extraLarge}
+                        className="w-full h-full object-cover"
+                        alt={anime.title.romaji}
+                      />
+                      <div className="absolute inset-0 bg-gradient-to-r from-[#0f1115] via-[#0f1115]/30 to-transparent" />
+                      <div className="absolute inset-0 bg-gradient-to-t from-[#0f1115] via-transparent to-transparent" />
+                    </div>
 
-            <form onSubmit={handleSearch} className="relative group max-w-2xl mx-auto md:mx-0">
-              <input 
-                type="text" 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Ex: One Piece, Jujutsu Kaisen..."
-                className="w-full bg-[#1a1d24] border border-gray-800 rounded-2xl py-4 px-12 focus:ring-2 focus:ring-indigo-500 outline-none transition-all placeholder-gray-500 group-focus-within:border-indigo-500"
-              />
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
-              <button 
-                type="submit" 
-                className="absolute right-3 top-1/2 -translate-y-1/2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-1.5 px-4 rounded-lg transition-colors"
-              >
-                Chercher
-              </button>
-            </form>
+                    <div className="relative h-full flex flex-col justify-center px-8 md:px-16 max-w-4xl space-y-6">
+                      <div className={`transition-all duration-1000 ${idx === currentSlide ? 'translate-y-0 opacity-100' : 'translate-y-4 opacity-0'}`}>
+                        <span className="inline-flex items-center gap-2 text-indigo-400 font-bold uppercase tracking-[0.2em] text-xs mb-4">
+                          <span className="w-8 h-0.5 bg-indigo-500" /> À la une
+                        </span>
+                        <h1 className="text-4xl md:text-6xl font-black text-white leading-tight drop-shadow-2xl tracking-tight mb-6">
+                          {anime.title.english || anime.title.romaji}
+                        </h1>
+                        <div className="text-gray-300 text-lg line-clamp-3 md:line-clamp-4 max-w-2xl drop-shadow-md mb-8 leading-relaxed overflow-hidden" dangerouslySetInnerHTML={{ __html: anime.description }} />
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-              {isLoading ? (
-                Array.from({ length: 10 }).map((_, i) => (
-                  <div key={i} className="animate-pulse space-y-3">
-                    <div className="bg-gray-800 rounded-2xl aspect-[2/3]" />
-                    <div className="h-4 bg-gray-800 rounded w-3/4" />
-                  </div>
-                ))
-              ) : (
-                searchResults.map(anime => (
-                  <div key={anime.id} className="group relative">
-                    <div onClick={() => navigateToDetails(anime.id)} className="cursor-pointer space-y-3">
-                      <div className="relative overflow-hidden rounded-2xl aspect-[2/3] shadow-lg ring-1 ring-gray-800 group-hover:ring-indigo-500 transition-all">
-                        <img src={anime.coverImage.large} alt={anime.title.romaji} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-4">
-                          <span className="text-xs font-bold bg-indigo-500 text-white px-2 py-1 rounded">Détails</span>
+                        <div className="flex flex-wrap gap-4 pt-4">
+                          <button
+                            onClick={() => navigateToDetails(anime.id)}
+                            className="flex items-center gap-3 bg-white text-black px-10 py-4 rounded-xl font-bold hover:bg-gray-200 transition-all transform active:scale-95 shadow-2xl"
+                          >
+                            <Info size={22} /> Plus d'infos
+                          </button>
+                          <button
+                            onClick={() => toggleFavorite(anime.id)}
+                            className={`flex items-center gap-3 px-10 py-4 rounded-xl font-bold backdrop-blur-md border transition-all transform active:scale-95 ${userData.favoriteIds.includes(anime.id) ? 'bg-red-500 text-white border-transparent' : 'bg-white/10 text-white border-white/20 hover:bg-white/20'}`}
+                          >
+                            {userData.favoriteIds.includes(anime.id) ? <Check size={22} /> : <Plus size={22} />}
+                            Ajouter à ma liste
+                          </button>
                         </div>
                       </div>
-                      <h3 className="font-semibold text-sm line-clamp-1 group-hover:text-indigo-400 transition-colors">{anime.title.romaji}</h3>
                     </div>
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); toggleFavorite(anime.id); }}
-                      className={`absolute top-2 right-2 p-2 rounded-full backdrop-blur-md transition-all ${userData.favoriteIds.includes(anime.id) ? 'bg-red-500 text-white' : 'bg-black/50 text-white hover:bg-black/70'}`}
-                    >
-                      <Heart size={16} fill={userData.favoriteIds.includes(anime.id) ? "currentColor" : "none"} />
-                    </button>
                   </div>
-                ))
+                ))}
+
+                {/* Pagination Dots */}
+                <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex gap-3 z-30">
+                  {featuredAnimes.map((_, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setCurrentSlide(idx)}
+                      className={`h-2 transition-all duration-500 rounded-full ${idx === currentSlide ? 'w-10 bg-indigo-500' : 'w-2 bg-white/30 hover:bg-white/50'}`}
+                      aria-label={`Go to slide ${idx + 1}`}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Content Rows */}
+            <div className="space-y-24 pb-20 -mt-16 relative z-20">
+              {myListAnime.length > 0 && (
+                <AnimeCarousel
+                  title="Ma Liste"
+                  items={myListAnime}
+                  onDetails={navigateToDetails}
+                  onToggleFavorite={toggleFavorite}
+                  favoriteIds={userData.favoriteIds}
+                />
               )}
+
+              <AnimeCarousel
+                title="Tendances du moment"
+                items={trendingAnime}
+                onDetails={navigateToDetails}
+                onToggleFavorite={toggleFavorite}
+                favoriteIds={userData.favoriteIds}
+              />
+
+              <AnimeCarousel
+                title="Action & Aventure"
+                items={actionAnime}
+                onDetails={navigateToDetails}
+                onToggleFavorite={toggleFavorite}
+                favoriteIds={userData.favoriteIds}
+              />
+
+              <AnimeCarousel
+                title="Comédie"
+                items={comedyAnime}
+                onDetails={navigateToDetails}
+                onToggleFavorite={toggleFavorite}
+                favoriteIds={userData.favoriteIds}
+              />
+
+              <AnimeCarousel
+                title="Romance"
+                items={romanceAnime}
+                onDetails={navigateToDetails}
+                onToggleFavorite={toggleFavorite}
+                favoriteIds={userData.favoriteIds}
+              />
             </div>
           </div>
         )}
 
-        {(currentView === 'playlists' || currentView === 'favorites') && (
-          <div className="space-y-10 animate-in slide-in-from-bottom duration-500">
-            <header className="flex flex-col sm:flex-row justify-between items-center gap-4">
-              <div>
-                <h1 className="text-3xl font-bold text-white mb-2">{currentView === 'playlists' ? 'Mes Playlists' : 'Favoris'}</h1>
-                <p className="text-gray-400">{currentView === 'playlists' ? 'Organisez vos séries préférées par catégories.' : 'Retrouvez tout ce que vous avez marqué comme coup de cœur.'}</p>
-              </div>
-              {currentView === 'playlists' && (
-                <button 
-                  onClick={() => setIsModalOpen(true)}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-medium transition-all shadow-lg shadow-indigo-500/10 active:scale-95 w-full sm:w-auto justify-center"
-                >
-                  <Plus size={20} />
-                  <span>Nouvelle Playlist</span>
-                </button>
-              )}
+        {currentView === 'search' && (
+          <div className="space-y-8 animate-in fade-in duration-500 p-8">
+            <header>
+              <h1 className="text-3xl font-bold text-white mb-2">Rechercher</h1>
+              <p className="text-gray-400">Découvrez de nouveaux animés et gérez votre collection.</p>
             </header>
 
-            <div className="grid gap-8">
-              {currentView === 'playlists' ? (
-                userData.playlists.map(playlist => (
-                  <PlaylistSection 
-                    key={playlist.id} 
-                    playlist={playlist} 
-                    favoriteIds={userData.favoriteIds}
-                    onDelete={() => deletePlaylist(playlist.id)}
-                    onAnimeClick={navigateToDetails}
-                    onRemoveAnime={(animeId) => toggleAnimeInPlaylist(playlist.id, animeId)}
-                    onToggleFavorite={toggleFavorite}
-                  />
-                ))
-              ) : (
-                <PlaylistSection 
-                  playlist={{ id: 'favorites-sys', name: 'Mes Coups de Cœur', animeIds: userData.favoriteIds, createdAt: 0 }} 
-                  favoriteIds={userData.favoriteIds}
-                  onDelete={() => {}}
-                  onAnimeClick={navigateToDetails}
-                  onRemoveAnime={toggleFavorite}
+            <form onSubmit={handleSearch} className="relative group max-w-2xl">
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Ex: One Piece, Jujutsu Kaisen..."
+                className="w-full bg-[#1a1d24] border border-gray-800 rounded-2xl py-4 px-12 focus:ring-2 focus:ring-indigo-500 outline-none transition-all placeholder-gray-500"
+              />
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" size={20} />
+              <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium py-1.5 px-4 rounded-lg">
+                Chercher
+              </button>
+            </form>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-x-6 gap-y-12">
+              {isLoading ? Array.from({ length: 12 }).map((_, i) => (
+                <div key={i} className="animate-pulse bg-gray-800 rounded-2xl aspect-[2/3]" />
+              )) : searchResults.map(anime => (
+                <AnimeCard
+                  key={anime.id}
+                  anime={anime}
+                  onClick={() => navigateToDetails(anime.id)}
                   onToggleFavorite={toggleFavorite}
-                  hideDelete
+                  isFavorite={userData.favoriteIds.includes(anime.id)}
                 />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {currentView === 'my-list' && (
+          <div className="space-y-8 animate-in slide-in-from-bottom duration-500 p-8">
+            <header>
+              <h1 className="text-3xl font-bold text-white mb-2">Ma Liste</h1>
+              <p className="text-gray-400">Tous les animés que vous avez enregistrés.</p>
+            </header>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-x-6 gap-y-12">
+              {myListAnime.map(anime => (
+                <AnimeCard
+                  key={anime.id}
+                  anime={anime}
+                  onClick={() => navigateToDetails(anime.id)}
+                  onToggleFavorite={toggleFavorite}
+                  isFavorite={userData.favoriteIds.includes(anime.id)}
+                />
+              ))}
+              {myListAnime.length === 0 && (
+                <div className="col-span-full py-20 text-center text-gray-500 border-2 border-dashed border-gray-800 rounded-3xl">
+                  Votre liste est vide.
+                </div>
               )}
             </div>
           </div>
         )}
 
         {currentView === 'details' && selectedAnimeId && (
-          <AnimeDetailsView 
-            id={selectedAnimeId} 
-            onBack={() => setCurrentView('search')} 
+          <AnimeDetailsView
+            id={selectedAnimeId}
+            onBack={() => setCurrentView('home')}
             userData={userData}
-            onTogglePlaylist={toggleAnimeInPlaylist}
             onStatusChange={updateAnimeStatus}
             onToggleFavorite={toggleFavorite}
             onToggleEpisode={toggleEpisodeWatched}
           />
         )}
       </main>
-
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-[#1a1d24] w-full max-w-md rounded-3xl p-8 border border-gray-800 shadow-2xl">
-            <h2 className="text-2xl font-bold text-white mb-6">Nouvelle Playlist</h2>
-            <form onSubmit={handleCreatePlaylist} className="space-y-6">
-              <input 
-                autoFocus
-                type="text"
-                placeholder="Nom de la playlist"
-                value={newPlaylistName}
-                onChange={(e) => setNewPlaylistName(e.target.value)}
-                className="w-full bg-[#0f1115] border border-gray-800 rounded-xl py-4 px-4 focus:ring-2 focus:ring-indigo-500 outline-none"
-              />
-              <div className="flex gap-4">
-                <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 bg-gray-800 text-white py-3 rounded-xl font-semibold">Annuler</button>
-                <button type="submit" disabled={!newPlaylistName.trim()} className="flex-1 bg-indigo-600 text-white py-3 rounded-xl font-semibold">Créer</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
 
-const NavButton: React.FC<{ icon: React.ReactNode, active: boolean, onClick: () => void, label: string }> = ({ icon, active, onClick, label }) => (
-  <button onClick={onClick} className={`p-3 rounded-xl transition-all relative group ${active ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}>
-    {icon}
-    <span className="absolute left-full ml-4 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 hidden md:block whitespace-nowrap z-50">{label}</span>
-  </button>
-);
-
-const PlaylistSection: React.FC<{ 
-  playlist: Partial<Playlist>, 
-  favoriteIds: number[],
-  onDelete: () => void, 
-  onAnimeClick: (id: number) => void,
-  onRemoveAnime: (id: number) => void,
-  onToggleFavorite: (id: number) => void,
-  hideDelete?: boolean
-}> = ({ playlist, favoriteIds, onDelete, onAnimeClick, onRemoveAnime, onToggleFavorite, hideDelete }) => {
-  const [animes, setAnimes] = useState<Partial<Anime>[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    const fetchAnimes = async () => {
-      if (!playlist.animeIds || playlist.animeIds.length === 0) {
-        setAnimes([]);
-        return;
-      }
-      setLoading(true);
-      const data = await getAnimeListByIds(playlist.animeIds);
-      setAnimes(data);
-      setLoading(false);
-    };
-    fetchAnimes();
-  }, [playlist.animeIds]);
-
-  return (
-    <section className="bg-[#161920] rounded-3xl p-6 border border-gray-800/50 shadow-xl">
-      <div className="flex justify-between items-center mb-6">
-        <div className="flex items-center gap-3">
-          <div className="bg-indigo-500/20 p-2 rounded-lg text-indigo-400">
-            {playlist.id === 'favorites-sys' ? <Heart size={20} fill="currentColor" /> : <Bookmark size={20} />}
-          </div>
-          <h2 className="text-xl font-bold text-white">{playlist.name}</h2>
-          <span className="text-xs bg-gray-800 px-2 py-0.5 rounded-full text-gray-400">{(playlist.animeIds || []).length}</span>
-        </div>
-        {!hideDelete && playlist.id !== 'default-watch' && (
-          <button onClick={onDelete} className="text-gray-500 hover:text-red-400 p-2"><Trash2 size={18} /></button>
-        )}
-      </div>
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-6">
-        {loading ? Array.from({ length: 4 }).map((_, i) => <div key={i} className="animate-pulse bg-gray-800 rounded-xl aspect-[2/3]" />) : (
-          animes.map(anime => (
-            <div key={anime.id} className="group relative">
-              <div onClick={() => onAnimeClick(anime.id!)} className="cursor-pointer rounded-xl overflow-hidden aspect-[2/3] ring-1 ring-gray-800 group-hover:ring-indigo-500 transition-all">
-                <img src={anime.coverImage?.large} className="w-full h-full object-cover" alt="" />
-              </div>
-              <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button onClick={() => onRemoveAnime(anime.id!)} className="bg-red-500 text-white rounded-full p-1.5"><X size={12} /></button>
-                <button onClick={() => onToggleFavorite(anime.id!)} className={`rounded-full p-1.5 ${favoriteIds.includes(anime.id!) ? 'bg-pink-500 text-white' : 'bg-black/50 text-white'}`}><Heart size={12} fill={favoriteIds.includes(anime.id!) ? 'currentColor' : 'none'} /></button>
-              </div>
-              <p className="text-xs mt-2 font-semibold text-gray-300 truncate">{anime.title?.romaji}</p>
-            </div>
-          ))
-        )}
-      </div>
-    </section>
-  );
-};
-
-const AnimeDetailsView: React.FC<{ 
-  id: number, 
-  onBack: () => void,
-  userData: UserData,
-  onTogglePlaylist: (pid: string, aid: number) => void,
-  onStatusChange: (aid: number, s: WatchStatus) => void,
-  onToggleFavorite: (id: number) => void,
-  onToggleEpisode: (aid: number, ep: number) => void
-}> = ({ id, onBack, userData, onTogglePlaylist, onStatusChange, onToggleFavorite, onToggleEpisode }) => {
-  const [parentAnime, setParentAnime] = useState<Anime | null>(null);
-  const [currentMediaId, setCurrentMediaId] = useState<number>(id);
-  const [currentMedia, setCurrentMedia] = useState<Anime | null>(null);
-  const [insight, setInsight] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isSeriesHub, setIsSeriesHub] = useState(true);
-
-  // Initial load of the "Parent" series hub
-  useEffect(() => {
-    const loadParent = async () => {
-      setIsLoading(true);
-      const data = await getAnimeById(id);
-      setParentAnime(data);
-      setCurrentMediaId(id);
-      setCurrentMedia(data);
-      setIsSeriesHub(true);
-      setIsLoading(false);
-    };
-    loadParent();
-  }, [id]);
-
-  // Load specific media when navigating between seasons
-  useEffect(() => {
-    if (currentMediaId === id && parentAnime) {
-      setCurrentMedia(parentAnime);
-      setIsSeriesHub(true);
-      return;
-    }
-
-    const loadMedia = async () => {
-      setIsLoading(true);
-      const data = await getAnimeById(currentMediaId);
-      setCurrentMedia(data);
-      const aiInsight = await getAnimeInsight(data.title.romaji, data.genres);
-      setInsight(aiInsight);
-      setIsLoading(false);
-    };
-    if (currentMediaId !== id) {
-      loadMedia();
-    }
-  }, [currentMediaId, id, parentAnime]);
-
-  const releasedEpisodesCount = useMemo(() => {
-    if (!currentMedia) return 0;
-    if (currentMedia.status === 'FINISHED') return currentMedia.episodes || 0;
-    if (currentMedia.status === 'RELEASING' && currentMedia.nextAiringEpisode) return currentMedia.nextAiringEpisode.episode - 1;
-    if (currentMedia.status === 'RELEASING') return currentMedia.episodes || 12; 
-    return 0;
-  }, [currentMedia]);
-
-  const seasons = useMemo(() => {
-    if (!currentMedia) return [];
-    return currentMedia.relations.edges
-      .filter(edge => ['SEQUEL', 'PREQUEL', 'SIDE_STORY', 'PARENT', 'SUMMARY'].includes(edge.relationType) && edge.node.type === 'ANIME')
-      .map(edge => ({
-        id: edge.node.id,
-        relationType: edge.relationType,
-        title: edge.node.title.romaji,
-        coverImage: edge.node.coverImage.large,
-        status: edge.node.status
-      }));
-  }, [currentMedia]);
-
-  if (isLoading || !currentMedia) return <div className="flex items-center justify-center h-96"><div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div></div>;
-
-  const currentStatus = userData.animeStatuses[currentMedia.id] || WatchStatus.PLAN_TO_WATCH;
-  const isFavorite = userData.favoriteIds.includes(currentMedia.id);
-  const watchedEps = userData.watchedEpisodes[currentMedia.id] || [];
-
-  const handleSeasonClick = (seasonId: number) => {
-    setCurrentMediaId(seasonId);
-    setIsSeriesHub(false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleBackToHub = () => {
-    setCurrentMediaId(id);
-    setIsSeriesHub(true);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const formatTime = (seconds: number) => {
-    const d = Math.floor(seconds / 86400), h = Math.floor((seconds % 86400) / 3600), m = Math.floor((seconds % 3600) / 60);
-    return `${d}j ${h}h ${m}m`;
-  };
-
-  return (
-    <div className="animate-in fade-in zoom-in-95 duration-500 pb-20">
-      <div className="flex justify-between items-center mb-8">
-        <button onClick={onBack} className="flex items-center gap-2 text-gray-400 hover:text-white transition-all hover:-translate-x-1">
-          <ChevronLeft size={20} /> <span className="font-medium">Retour à la recherche</span>
-        </button>
-        {!isSeriesHub && (
-          <button onClick={handleBackToHub} className="flex items-center gap-2 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-4 py-2 rounded-xl hover:bg-indigo-500/20 transition-all">
-            <Layers size={18} /> <span className="font-medium">Toutes les Saisons</span>
-          </button>
-        )}
-      </div>
-
-      <div className="grid lg:grid-cols-[320px_1fr] gap-12">
-        <aside className="space-y-8">
-          <div className="relative group">
-            <img src={currentMedia.coverImage.extraLarge} className="w-full rounded-3xl shadow-2xl ring-1 ring-gray-800" alt={currentMedia.title.romaji} />
-            <button onClick={() => onToggleFavorite(currentMedia.id)} className={`absolute top-4 right-4 p-4 rounded-2xl backdrop-blur-md transition-all ${isFavorite ? 'bg-red-500 text-white shadow-lg' : 'bg-black/50 text-white hover:bg-black/70'}`}><Heart size={24} fill={isFavorite ? "currentColor" : "none"} /></button>
-          </div>
-
-          <div className="bg-[#1a1d24] p-6 rounded-3xl border border-gray-800 space-y-4 shadow-xl">
-            <h3 className="font-bold text-lg text-white flex items-center gap-2"><Play size={18} className="text-indigo-400" /> État de visionnage</h3>
-            <div className="flex flex-col gap-2">
-              {[WatchStatus.PLAN_TO_WATCH, WatchStatus.IN_PROGRESS, WatchStatus.COMPLETED].map(s => (
-                <button key={s} onClick={() => onStatusChange(currentMedia.id, s as WatchStatus)} className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-semibold transition-all ${currentStatus === s ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'bg-gray-800/50 text-gray-400 hover:bg-gray-800'}`}>
-                  <span>{s}</span>
-                  {currentStatus === s && <Check size={14} />}
-                </button>
-              ))}
-            </div>
-            {watchedEps.length > 0 && (
-              <div className="pt-4 border-t border-gray-800">
-                <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-gray-500 mb-2">
-                  <span>Progression</span>
-                  <span>{watchedEps.length} / {currentMedia.episodes || releasedEpisodesCount}</span>
-                </div>
-                <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-indigo-500 transition-all duration-700" style={{ width: `${(watchedEps.length / (currentMedia.episodes || releasedEpisodesCount)) * 100}%` }} />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="bg-[#1a1d24] p-6 rounded-3xl border border-gray-800 shadow-xl">
-            <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2"><Bookmark size={18} className="text-indigo-400" /> Ajouter aux Playlists</h3>
-            <div className="flex flex-col gap-2">
-              {userData.playlists.map(p => {
-                const isIn = p.animeIds.includes(currentMedia.id);
-                return (
-                  <button key={p.id} onClick={() => onTogglePlaylist(p.id, currentMedia.id)} className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${isIn ? 'bg-indigo-600/10 text-indigo-400 border border-indigo-500/30' : 'bg-gray-800/30 text-gray-500 border border-transparent hover:border-gray-700'}`}>
-                    {isIn ? <CheckCircle size={14} /> : <Plus size={14} />}
-                    {p.name}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </aside>
-
-        <section className="space-y-12">
-          <header>
-            <div className="flex flex-wrap gap-2 mb-4">
-              {currentMedia.genres.map(g => <span key={g} className="text-[10px] font-black uppercase tracking-[0.1em] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-3 py-1 rounded-md">{g}</span>)}
-              <span className="text-[10px] font-black uppercase tracking-[0.1em] bg-yellow-500/10 text-yellow-500 border border-yellow-500/20 px-3 py-1 rounded-md">★ {currentMedia.averageScore}%</span>
-              {!isSeriesHub && <span className="text-[10px] font-black uppercase tracking-[0.1em] bg-indigo-600 text-white px-3 py-1 rounded-md">Saison Détails</span>}
-            </div>
-            <h1 className="text-4xl md:text-6xl font-black text-white leading-tight mb-2 tracking-tight">{currentMedia.title.romaji}</h1>
-            <p className="text-xl text-gray-500 font-medium">{currentMedia.title.english || currentMedia.title.native}</p>
-          </header>
-
-          <div className="prose prose-invert max-w-none">
-            <h2 className="text-xl font-bold text-white border-l-4 border-indigo-500 pl-4 mb-4">Synopsis</h2>
-            <div className="text-gray-400 leading-relaxed text-lg" dangerouslySetInnerHTML={{ __html: currentMedia.description }} />
-          </div>
-
-          {/* HUB VIEW: ONLY SHOW SEASONS */}
-          {isSeriesHub ? (
-            <div className="space-y-8 animate-in slide-in-from-right duration-500">
-              <div className="flex items-center justify-between border-b border-gray-800 pb-4">
-                <h2 className="text-2xl font-black text-white flex items-center gap-3"><Layers size={24} className="text-indigo-400" /> Saisons de la série</h2>
-                <span className="text-gray-500 font-bold text-sm">{seasons.length} relations</span>
-              </div>
-              
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-6">
-                {seasons.map(season => (
-                  <div key={season.id} onClick={() => handleSeasonClick(season.id)} className="group cursor-pointer">
-                    <div className="relative aspect-[2/3] rounded-3xl overflow-hidden ring-1 ring-gray-800 group-hover:ring-indigo-500 transition-all mb-4 shadow-2xl">
-                      <img src={season.coverImage} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" alt={season.title} />
-                      <div className="absolute top-3 left-3 bg-black/70 backdrop-blur-md text-[10px] font-black px-3 py-1.5 rounded-full text-white uppercase tracking-widest">{season.relationType.replace('_', ' ')}</div>
-                      <div className="absolute inset-0 bg-indigo-600/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <div className="bg-white text-indigo-600 p-3 rounded-full shadow-xl">
-                          <Play fill="currentColor" size={24} />
-                        </div>
-                      </div>
-                    </div>
-                    <p className="text-sm font-bold text-gray-300 truncate group-hover:text-white transition-colors text-center">{season.title}</p>
-                  </div>
-                ))}
-              </div>
-
-              {seasons.length === 0 && (
-                <div className="p-16 text-center text-gray-500 bg-[#161920] rounded-3xl border border-gray-800 border-dashed">
-                  <p className="text-lg">Aucune autre saison trouvée pour cet animé.</p>
-                </div>
-              )}
-            </div>
-          ) : (
-            /* SEASON DETAIL VIEW: SHOW EPISODES + OTHER SEASONS AT BOTTOM */
-            <div className="space-y-12 animate-in slide-in-from-right duration-500">
-              
-              {currentMedia.nextAiringEpisode && (
-                <div className="bg-gradient-to-r from-indigo-600 to-indigo-800 p-8 rounded-3xl flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-2xl shadow-indigo-500/20">
-                  <div className="flex items-center gap-6">
-                    <div className="bg-white/20 p-4 rounded-2xl text-white backdrop-blur-sm"><Calendar size={32} /></div>
-                    <div>
-                      <h3 className="text-white font-black text-2xl uppercase tracking-tight">Prochain Épisode ({currentMedia.nextAiringEpisode.episode})</h3>
-                      <p className="text-indigo-100 font-medium opacity-80">Diffusion dans {formatTime(currentMedia.nextAiringEpisode.timeUntilAiring)}</p>
-                    </div>
-                  </div>
-                  <div className="text-left md:text-right">
-                    <p className="text-indigo-200 text-xs font-bold uppercase tracking-widest mb-1">Date prévue</p>
-                    <p className="text-white text-xl font-black">{new Date(currentMedia.nextAiringEpisode.airingAt * 1000).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
-                  </div>
-                </div>
-              )}
-
-              <div className="space-y-6">
-                <div className="flex items-center justify-between border-b border-gray-800 pb-4">
-                  <h2 className="text-2xl font-black text-white flex items-center gap-3"><Play size={24} className="text-indigo-400" /> Épisodes de la saison</h2>
-                  <span className="text-gray-500 font-bold text-sm">{releasedEpisodesCount} épisodes sortis</span>
-                </div>
-                
-                <div className="bg-[#161920] rounded-3xl border border-gray-800 overflow-hidden shadow-xl">
-                  <div className="divide-y divide-gray-800">
-                    {releasedEpisodesCount > 0 ? (
-                      Array.from({ length: releasedEpisodesCount }).map((_, i) => {
-                        const epNum = i + 1;
-                        const streamingEp = currentMedia.streamingEpisodes.find((_, idx) => idx === i);
-                        const isWatched = watchedEps.includes(epNum);
-                        return (
-                          <div key={epNum} className={`flex items-center justify-between p-5 group hover:bg-indigo-500/5 transition-colors ${isWatched ? 'bg-indigo-500/[0.03]' : ''}`}>
-                            <div className="flex items-center gap-5 min-w-0">
-                              <span className={`text-xs font-black w-10 h-10 flex items-center justify-center rounded-xl transition-all ${isWatched ? 'bg-indigo-600 text-white shadow-lg' : 'bg-gray-800 text-gray-500 group-hover:bg-gray-700'}`}>
-                                {epNum}
-                              </span>
-                              <div className="min-w-0">
-                                <h4 className={`text-base font-bold truncate ${isWatched ? 'text-indigo-400' : 'text-gray-200'}`}>
-                                  {streamingEp?.title || `Épisode ${epNum}`}
-                                </h4>
-                                {streamingEp?.url && (
-                                  <a href={streamingEp.url} target="_blank" rel="noopener noreferrer" className="text-[11px] text-gray-500 hover:text-indigo-400 flex items-center gap-1.5 mt-1 font-medium">
-                                    <ExternalLink size={12} /> Regarder l'épisode
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                            <button 
-                              onClick={() => onToggleEpisode(currentMedia.id, epNum)}
-                              className={`p-3 rounded-xl transition-all ${isWatched ? 'bg-indigo-600 text-white shadow-lg scale-110' : 'bg-gray-800 text-gray-500 hover:text-white hover:bg-gray-700'}`}
-                            >
-                              <CheckCircle size={20} fill={isWatched ? "currentColor" : "none"} />
-                            </button>
-                          </div>
-                        );
-                      })
-                    ) : (
-                      <div className="p-20 text-center text-gray-500 flex flex-col items-center gap-4">
-                        <Clock size={48} className="opacity-10" />
-                        <p className="text-lg font-medium">Cette saison n'a pas encore d'épisodes diffusés.</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {insight && (
-                <div className="bg-[#1a1d24] p-8 rounded-3xl border border-indigo-500/10 shadow-xl relative group">
-                  <div className="flex items-center gap-3 mb-4 text-indigo-400">
-                    <Heart size={20} className="animate-pulse" /> 
-                    <span className="font-black text-xs uppercase tracking-widest">Pourquoi regarder cette saison ?</span>
-                  </div>
-                  <p className="text-gray-300 leading-relaxed italic text-lg font-medium">"{insight}"</p>
-                </div>
-              )}
-
-              {/* OTHER SEASONS MINI GRID AT BOTTOM */}
-              <div className="space-y-6 pt-12 border-t border-gray-800">
-                <h3 className="text-xl font-bold text-white flex items-center gap-2"><Layers size={20} className="text-indigo-400" /> Autres Saisons</h3>
-                <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide">
-                  {seasons.map(season => (
-                    <div key={season.id} onClick={() => handleSeasonClick(season.id)} className="flex-shrink-0 w-36 cursor-pointer group">
-                      <div className="relative aspect-[2/3] rounded-2xl overflow-hidden ring-1 ring-gray-800 group-hover:ring-indigo-500 transition-all mb-3 shadow-lg">
-                        <img src={season.coverImage} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" alt={season.title} />
-                        <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-[8px] font-black px-2 py-1 rounded text-white uppercase tracking-widest">{season.relationType.replace('_', ' ')}</div>
-                      </div>
-                      <p className="text-[11px] font-bold text-gray-400 truncate group-hover:text-white transition-colors">{season.title}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-};
 
 export default App;
