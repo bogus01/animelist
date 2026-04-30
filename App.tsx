@@ -251,6 +251,7 @@ const App: React.FC = () => {
 
   // Persisted User Data
   const [userData, setUserData] = useState<UserData>({ animeStatuses: {}, favoriteIds: [], watchedEpisodes: {} });
+  const [isInitialized, setIsInitialized] = useState(false);
   const [userId] = useState(() => {
     let id = localStorage.getItem('ani_user_id');
     if (!id) {
@@ -278,11 +279,14 @@ const App: React.FC = () => {
           await KVStorageService.saveUserData(userId, parsed);
         }
       }
+      setIsInitialized(true);
     };
     initData();
   }, [userId]);
 
   useEffect(() => {
+    if (!isInitialized) return;
+
     // Save to both
     localStorage.setItem('ani_user_data', JSON.stringify(userData));
     KVStorageService.saveUserData(userId, userData).catch(err => console.error("Sync error:", err));
@@ -297,7 +301,7 @@ const App: React.FC = () => {
       }
     };
     loadMyList();
-  }, [userData]);
+  }, [userData, isInitialized]);
 
   const [isLoadingHome, setIsLoadingHome] = useState(true);
 

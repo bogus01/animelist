@@ -1,5 +1,5 @@
 
-export const ANILIST_API_URL = 'https://graphql.anilist.co';
+export const ANILIST_API_URL = '/anilist';
 
 export const DEFAULT_PLAYLISTS = [
   { id: 'default-watch', name: 'À suivre', animeIds: [], createdAt: Date.now() }
